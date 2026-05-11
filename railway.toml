@@ -2,5 +2,5 @@
 builder = "nixpacks"
 
 [deploy]
-cronSchedule = "0 11 * * *"
-startCommand = "JOB=aniversario python main.py"
+startCommand = "python main.py"
+restartPolicyType = "always"
