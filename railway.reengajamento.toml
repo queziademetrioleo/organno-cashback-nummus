@@ -1,0 +1,6 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+cronSchedule = "0 17 * * *"
+startCommand = "JOB=reengajamento python main.py"

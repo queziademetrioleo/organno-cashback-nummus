@@ -1,0 +1,6 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+cronSchedule = "0 13 * * *"
+startCommand = "JOB=expiry python main.py"
