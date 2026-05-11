@@ -2,4 +2,8 @@
 builder = "nixpacks"
 
 [deploy]
+# cron e JOB configurados por serviço no Railway dashboard
+# aniversario: JOB=aniversario | 0 11 * * * (08:00 BRT)
+# expiry:      JOB=expiry      | 0 13 * * * (10:00 BRT)
+# reengajamento: JOB=reengajamento | 0 17 * * * (14:00 BRT)
 startCommand = "python main.py"
