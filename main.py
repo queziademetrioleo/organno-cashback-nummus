@@ -26,6 +26,11 @@ WEBHOOK_REENGAJAMENTO_URL = os.environ.get(
 )
 
 REENGAJAMENTO_DIAS = 7
+REENGAJAMENTO_EXCLUDED_CPFS = [
+    cpf.strip()
+    for cpf in os.environ.get("REENGAJAMENTO_EXCLUDED_CPFS", "").split(",")
+    if cpf.strip()
+]
 BRT = timezone(timedelta(hours=-3))
 
 # (hora_brt, job)
@@ -222,8 +227,16 @@ def fetch_reengajamento(cur, durations: dict, today: date) -> list[dict]:
     results = []
     for dias, group_codes in by_days.items():
         purchase_date = today - timedelta(days=dias + REENGAJAMENTO_DIAS)
+        excluded_clause = (
+            "AND v.cpf_cliente <> ALL(%s)" if REENGAJAMENTO_EXCLUDED_CPFS else ""
+        )
+        params: tuple = (
+            (group_codes, purchase_date, purchase_date, REENGAJAMENTO_EXCLUDED_CPFS)
+            if REENGAJAMENTO_EXCLUDED_CPFS
+            else (group_codes, purchase_date, purchase_date)
+        )
         cur.execute(
-            """
+            f"""
             SELECT DISTINCT
                 c.nome,
                 c.ddd_celular,
@@ -237,6 +250,7 @@ def fetch_reengajamento(cur, durations: dict, today: date) -> list[dict]:
               AND v.data = %s
               AND dv.status_produto_vendido = 'Válido'
               AND v.status = 'Válido'
+              {excluded_clause}
               AND NOT EXISTS (
                 SELECT 1
                 FROM vendas v2
@@ -249,7 +263,7 @@ def fetch_reengajamento(cur, durations: dict, today: date) -> list[dict]:
                   AND v2.status = 'Válido'
               )
             """,
-            (group_codes, purchase_date, purchase_date),
+            params,
         )
         for row in cur.fetchall():
             nome, ddd_cel, celular, ddd_tel, telefone = row
