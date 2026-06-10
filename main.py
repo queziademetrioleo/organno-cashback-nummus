@@ -280,26 +280,63 @@ def fetch_reengajamento(cur, durations: dict, today: date) -> list[dict]:
     return results
 
 
+def group_expiry_by_client(items: list[dict]) -> list[dict]:
+    """Agrupa itens de expiração por cliente (CPF).
+
+    Se o mesmo cliente tem mais de um produto expirando no dia, todos vão
+    em um único evento, dentro da lista `produtos`. Mantém a ordem de chegada.
+    """
+    grouped: dict[str, dict] = {}
+    for item in items:
+        # Chave por CPF; cai no whatsapp caso CPF esteja vazio
+        key = item.get("cpf_cliente") or item.get("cliente_whatsapp") or ""
+        produto = {
+            "codigo_produto": item["codigo_produto"],
+            "nome_produto": item["nome_produto"],
+            "dias_duracao": item["dias_duracao"],
+            "quantidade": item["quantidade"],
+            "codigo_venda": item["codigo_venda"],
+            "data_compra": item["data_compra"],
+            "data_expiracao": item["data_expiracao"],
+        }
+        if key in grouped:
+            grouped[key]["produtos"].append(produto)
+        else:
+            grouped[key] = {
+                "cpf_cliente": item["cpf_cliente"],
+                "cliente_nome": item["cliente_nome"],
+                "cliente_whatsapp": item["cliente_whatsapp"],
+                "cliente_email": item["cliente_email"],
+                "data_expiracao": item["data_expiracao"],
+                "produtos": [produto],
+            }
+    return list(grouped.values())
+
+
 def send_webhook(payload: dict) -> bool:
     try:
         resp = requests.post(WEBHOOK_URL, json=payload, timeout=15)
         resp.raise_for_status()
         return True
     except requests.RequestException as e:
-        log.error(f"Webhook falhou para venda {payload.get('codigo_venda')}: {e}")
+        log.error(f"Webhook falhou para cliente {payload.get('cpf_cliente')}: {e}")
         return False
 
 
 def run_expiry(cur, durations: dict, today: date) -> tuple[int, int]:
     items = fetch_expiring_today(cur, durations, today)
-    log.info(f"📦 {len(items)} compras expiram hoje")
+    eventos = group_expiry_by_client(items)
+    log.info(
+        f"📦 {len(items)} compras expiram hoje → {len(eventos)} eventos (1 por cliente)"
+    )
     ok = fail = 0
-    for item in items:
+    for evento in eventos:
+        nomes = ", ".join(p["nome_produto"] for p in evento["produtos"])
         log.info(
-            f"  → venda {item['codigo_venda']} | {item['nome_produto']} | "
-            f"cliente: {item['cliente_nome']} | whatsapp: {item['cliente_whatsapp']}"
+            f"  → cliente: {evento['cliente_nome']} | whatsapp: {evento['cliente_whatsapp']} | "
+            f"{len(evento['produtos'])} produto(s): {nomes}"
         )
-        if send_webhook(item):
+        if send_webhook(evento):
             ok += 1
         else:
             fail += 1
