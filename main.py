@@ -2,8 +2,10 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import requests
 
@@ -22,6 +24,8 @@ MIN_ACTIVE_BALANCE = 30.0
 TARGET_PRIORITY = sorted(TARGET_DAYS)
 BRT            = timezone(timedelta(hours=-3))
 SENT_FILE      = "/tmp/sent_today.json"
+WEBHOOK_MAX_RETRIES = 3
+WEBHOOK_RETRY_DELAY = 10  # segundos (backoff exponencial: 10→20→40s)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -187,13 +191,27 @@ def build_customer_expiry_targets(today: date) -> list[dict]:
 
 # ── Webhook ──────────────────────────────────────────────────────────────────
 def send_webhook(payload: dict) -> bool:
-    try:
-        resp = requests.post(WEBHOOK_URL, json=payload, timeout=15)
-        resp.raise_for_status()
-        return True
-    except Exception as e:
-        log.error(f"❌ Webhook falhou (cashback {payload.get('id')}): {e}")
-        return False
+    """Envia webhook com retry exponencial (ate WEBHOOK_MAX_RETRIES tentativas)."""
+    last_error = None
+    for attempt in range(WEBHOOK_MAX_RETRIES):
+        try:
+            resp = requests.post(WEBHOOK_URL, json=payload, timeout=15)
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            last_error = e
+            if attempt < WEBHOOK_MAX_RETRIES - 1:
+                delay = WEBHOOK_RETRY_DELAY * (2 ** attempt)
+                log.warning(
+                    f"⚠️  Webhook tentativa {attempt + 1}/{WEBHOOK_MAX_RETRIES} falhou: {e} — "
+                    f"retry em {delay}s"
+                )
+                time.sleep(delay)
+    log.error(
+        f"❌ Webhook falhou após {WEBHOOK_MAX_RETRIES} tentativas "
+        f"(cashback {payload.get('id')}): {last_error}"
+    )
+    return False
 
 
 # ── Job 1: cashbacks prestes a expirar ──────────────────────────────────────
@@ -300,11 +318,41 @@ def wake_up_api() -> None:
     raise RuntimeError("API Nummus não respondeu após 3 tentativas")
 
 
+# ── Health Check ──────────────────────────────────────────────────────────────
+def start_health_server(port: int) -> None:
+    """Servidor HTTP mínimo para o Railway detectar porta aberta."""
+
+    class HealthHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+
+        def log_message(self, *args):
+            pass  # silencia logs de acesso HTTP
+
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    log.info(f"🏥 Health check ouvindo na porta {port}")
+    server.serve_forever()
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    log.info("🟢 Serviço iniciado — aguardando janela de 11h BRT")
+    # 1) Health check — Railway precisa de bind no $PORT em até ~30s
+    port = int(os.environ.get("PORT", "8080"))
+    threading.Thread(target=start_health_server, args=(port,), daemon=True).start()
+    # Pequena pausa para garantir que o socket subiu
+    time.sleep(1)
+
+    run_on_start = os.environ.get("RUN_ON_START", "false").lower() == "true"
+    log.info("🟢 Serviço iniciado")
+
     while True:
-        wait_until_11h_brt()
+        if run_on_start:
+            log.info("🚀 RUN_ON_START=true — executando jobs imediatamente")
+            run_on_start = False  # só uma vez
+        else:
+            wait_until_11h_brt()
 
         today     = datetime.now(BRT).date()
         today_str = today.isoformat()
